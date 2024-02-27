@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools >= 40.6.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ece532"
+version = "0.0.0"
+readme = "README.md"
+authors = [{ name = "Martin Staadecker", email = "machstg@gmail.com" }]
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+]
+keywords = ["linear programming", "numerical issues"]
+requires-python = ">=3.7"
+dependencies = [
+    "scipy>=1.12.0"
+]
+
+[project.optional-dependencies]
+dev = ["black[d]", "pytest", "build", "twine"]
+
+[project.scripts]
+ece532_solver = "ece532_solver.__main__:main"

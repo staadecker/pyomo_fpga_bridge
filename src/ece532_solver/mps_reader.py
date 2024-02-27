@@ -6,7 +6,7 @@ https://lpsolve.sourceforge.net/5.5/mps-format.htm
 
 from typing import List
 
-from .core import Bound, LPModel
+from .lp_model import Bound, LPModel
 from .util import print_progress
 
 

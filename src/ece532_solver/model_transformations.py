@@ -1,7 +1,9 @@
 from collections import defaultdict
-from .core import LPModel, Bound, Row
 from scipy.sparse import coo_array
 import numpy as np
+
+from .lp_model import LPModel, Bound, Row
+
 
 BIG_M = 1e20
 

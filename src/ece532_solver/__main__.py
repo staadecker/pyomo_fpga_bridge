@@ -1,6 +1,6 @@
 import argparse
 from .mps_reader import MPSReader
-from .transformations import build_tableau, transform_into_standard_form
+from .model_transformations import build_tableau, transform_into_standard_form
 
 
 def main():

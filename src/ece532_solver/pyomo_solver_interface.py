@@ -1,3 +1,4 @@
+"""Code inspired from pyomo/pyomo library. Copyright is therefore theirs."""
 import os
 import re
 

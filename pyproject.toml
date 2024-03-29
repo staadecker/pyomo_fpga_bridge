@@ -17,7 +17,8 @@ keywords = ["linear programming", "numerical issues"]
 requires-python = ">=3.7"
 dependencies = [
     "scipy>=1.12.0",
-    "pyomo"
+    "pyomo",
+    "tqdm"
 ]
 
 [project.optional-dependencies]

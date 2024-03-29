@@ -1,15 +1,28 @@
 """Code inspired from pyomo/pyomo library. Copyright is therefore theirs."""
+
 import os
 import re
+import time
+import ece532_solver
 
 from pyomo.opt.base.formats import ProblemFormat, ResultsFormat
 from pyomo.opt.solver.ilmcmd import ILMLicensedSystemCallSolver
 from pyomo.common.collections.bunch import Bunch
 from pyomo.common.tempfiles import TempfileManager
-from pyomo.opt.results import Solution, TerminationCondition, SolutionStatus, SolverStatus, ProblemSense
+from pyomo.opt.results import (
+    Solution,
+    TerminationCondition,
+    SolutionStatus,
+    SolverStatus,
+    ProblemSense,
+)
 from pyomo.opt.base.solvers import SolverFactory
-    
-@SolverFactory.register("ece532_solver", doc="Custom solver that reads from an MPS file and writes to a solution file")
+
+
+@SolverFactory.register(
+    "ece532_solver",
+    doc="Custom solver that reads from an MPS file and writes to a solution file",
+)
 class ECE532Solver(ILMLicensedSystemCallSolver):
     """Shell interface to the GUROBI LP/MIP solver"""
 
@@ -19,7 +32,7 @@ class ECE532Solver(ILMLicensedSystemCallSolver):
         #
         # Call base class constructor
         #
-        kwds['type'] = 'custom'
+        kwds["type"] = "custom"
         ILMLicensedSystemCallSolver.__init__(self, **kwds)
 
         # NOTE: eventually both of the following attributes should be
@@ -58,9 +71,23 @@ class ECE532Solver(ILMLicensedSystemCallSolver):
     def warm_start_capable(self):
         return False
 
-
     def _default_executable(self):
         return "python"
+
+    def _execute_command(self, command):
+        """
+        Execute the command
+        """
+
+        start_time = time.time()
+
+        ece532_solver.main_without_argument_parser(
+            self._problem_files[0], output_file=self._soln_file
+        )
+
+        self._last_solve_time = time.time() - start_time
+
+        return [0, ""]
 
     def _get_version(self):
         """
@@ -75,7 +102,7 @@ class ECE532Solver(ILMLicensedSystemCallSolver):
         # solver status can be found in the solution file.
         #
         if self._log_file is None:
-            self._log_file = TempfileManager.create_tempfile(suffix='.ece532.log')
+            self._log_file = TempfileManager.create_tempfile(suffix=".ece532.log")
 
         #
         # Define solution file
@@ -83,7 +110,7 @@ class ECE532Solver(ILMLicensedSystemCallSolver):
         # solver status.
         #
         if self._soln_file is None:
-            self._soln_file = TempfileManager.create_tempfile(suffix='.ece532.txt')
+            self._soln_file = TempfileManager.create_tempfile(suffix=".ece532.txt")
 
         #
         # Write the GUROBI execution script
@@ -99,31 +126,13 @@ class ECE532Solver(ILMLicensedSystemCallSolver):
         for key in self.options:
             options_dict[key] = self.options[key]
 
-        # NOTE: the gurobi shell is independent of Pyomo python
-        #       virtualized environment, so any imports - specifically
-        #       that required to get GUROBI_RUN - must be handled
-        #       explicitly.
-        # NOTE: The gurobi plugin (GUROBI.py) and GUROBI_RUN.py live in
-        #       the same directory.
-        script = f"""import ece532_solver\nece532_solver.solve(r'{problem_filename}')\nquit()"""
-
-        # dump the script and warm-start file names for the
-        # user if we're keeping files around.
-        if self._keepfiles:
-            script_fname = TempfileManager.create_tempfile(suffix='.ece532.script')
-            script_file = open(script_fname, 'w')
-            script_file.write(script)
-            script_file.close()
-
-            print("Solver script file: '%s'" % script_fname)
-            
         #
         # Define command line
         #
         cmd = [executable]
         if self._timer:
             cmd.insert(0, self._timer)
-        return Bunch(cmd=cmd, script=script, log_file=self._log_file, env=None)
+        return Bunch(cmd=cmd, script="", log_file=self._log_file, env=None)
 
     def process_soln_file(self, results):
         # the only suffixes that we extract from CPLEX are
@@ -183,73 +192,73 @@ class ECE532Solver(ILMLicensedSystemCallSolver):
         for line in INPUT:
             line = line.strip()
             tokens = [token.strip() for token in line.split(":")]
-            if tokens[0] == 'section':
-                if tokens[1] == 'problem':
+            if tokens[0] == "section":
+                if tokens[1] == "problem":
                     section = 1
-                elif tokens[1] == 'solution':
+                elif tokens[1] == "solution":
                     section = 2
                     solution_seen = True
-                elif tokens[1] == 'solver':
+                elif tokens[1] == "solver":
                     section = 3
             else:
                 if section == 2:
-                    if tokens[0] == 'var':
+                    if tokens[0] == "var":
                         if tokens[1] != "ONE_VAR_CONSTANT":
                             soln_variables[tokens[1]] = {"Value": float(tokens[2])}
                             num_variables_read += 1
-                    elif tokens[0] == 'status':
+                    elif tokens[0] == "status":
                         soln.status = getattr(SolutionStatus, tokens[1])
-                    elif tokens[0] == 'gap':
+                    elif tokens[0] == "gap":
                         soln.gap = float(tokens[1])
-                    elif tokens[0] == 'objective':
-                        if tokens[1].strip() != 'None':
-                            soln.objective['__default_objective__'] = {
-                                'Value': float(tokens[1])
+                    elif tokens[0] == "objective":
+                        if tokens[1].strip() != "None":
+                            soln.objective["__default_objective__"] = {
+                                "Value": float(tokens[1])
                             }
                             if results.problem.sense == ProblemSense.minimize:
                                 results.problem.upper_bound = float(tokens[1])
                             else:
                                 results.problem.lower_bound = float(tokens[1])
-                    elif tokens[0] == 'constraintdual':
+                    elif tokens[0] == "constraintdual":
                         name = tokens[1]
                         if name != "c_e_ONE_VAR_CONSTANT":
-                            if name.startswith('c_'):
+                            if name.startswith("c_"):
                                 soln_constraints.setdefault(tokens[1], {})["Dual"] = (
                                     float(tokens[2])
                                 )
-                            elif name.startswith('r_l_'):
+                            elif name.startswith("r_l_"):
                                 range_duals.setdefault(name[4:], [0, 0])[0] = float(
                                     tokens[2]
                                 )
-                            elif name.startswith('r_u_'):
+                            elif name.startswith("r_u_"):
                                 range_duals.setdefault(name[4:], [0, 0])[1] = float(
                                     tokens[2]
                                 )
-                    elif tokens[0] == 'constraintslack':
+                    elif tokens[0] == "constraintslack":
                         name = tokens[1]
                         if name != "c_e_ONE_VAR_CONSTANT":
-                            if name.startswith('c_'):
+                            if name.startswith("c_"):
                                 soln_constraints.setdefault(tokens[1], {})["Slack"] = (
                                     float(tokens[2])
                                 )
-                            elif name.startswith('r_l_'):
+                            elif name.startswith("r_l_"):
                                 range_slacks.setdefault(name[4:], [0, 0])[0] = float(
                                     tokens[2]
                                 )
-                            elif name.startswith('r_u_'):
+                            elif name.startswith("r_u_"):
                                 range_slacks.setdefault(name[4:], [0, 0])[1] = float(
                                     tokens[2]
                                 )
-                    elif tokens[0] == 'varrc':
+                    elif tokens[0] == "varrc":
                         if tokens[1] != "ONE_VAR_CONSTANT":
                             soln_variables[tokens[1]]["Rc"] = float(tokens[2])
                     else:
                         setattr(soln, tokens[0], tokens[1])
                 elif section == 1:
-                    if tokens[0] == 'sense':
-                        if tokens[1] == 'minimize':
+                    if tokens[0] == "sense":
+                        if tokens[1] == "minimize":
                             results.problem.sense = ProblemSense.minimize
-                        elif tokens[1] == 'maximize':
+                        elif tokens[1] == "maximize":
                             results.problem.sense = ProblemSense.maximize
                     else:
                         try:
@@ -258,9 +267,9 @@ class ECE532Solver(ILMLicensedSystemCallSolver):
                             val = tokens[1]
                         setattr(results.problem, tokens[0], val)
                 elif section == 3:
-                    if tokens[0] == 'status':
+                    if tokens[0] == "status":
                         results.solver.status = getattr(SolverStatus, tokens[1])
-                    elif tokens[0] == 'termination_condition':
+                    elif tokens[0] == "termination_condition":
                         try:
                             results.solver.termination_condition = getattr(
                                 TerminationCondition, tokens[1]
@@ -278,17 +287,17 @@ class ECE532Solver(ILMLicensedSystemCallSolver):
         # magnitude (at least one should always be numerically zero)
         for key, (ld, ud) in range_duals.items():
             if abs(ld) > abs(ud):
-                soln_constraints['r_l_' + key] = {"Dual": ld}
+                soln_constraints["r_l_" + key] = {"Dual": ld}
             else:
                 # Use the same key
-                soln_constraints['r_l_' + key] = {"Dual": ud}
+                soln_constraints["r_l_" + key] = {"Dual": ud}
         # slacks
         for key, (ls, us) in range_slacks.items():
             if abs(ls) > abs(us):
-                soln_constraints.setdefault('r_l_' + key, {})["Slack"] = ls
+                soln_constraints.setdefault("r_l_" + key, {})["Slack"] = ls
             else:
                 # Use the same key
-                soln_constraints.setdefault('r_l_' + key, {})["Slack"] = us
+                soln_constraints.setdefault("r_l_" + key, {})["Slack"] = us
 
         if solution_seen:
             results.solution.insert(soln)

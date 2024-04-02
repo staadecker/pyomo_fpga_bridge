@@ -1,8 +1,7 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, Generator, Optional, Tuple
 
 # Mapping of row types to user friendly outputs. Used when printing rows.
-# RHS values are on the left, hence why >= and <= are flipped.
-SYMBOL_MAPPING = {"L": ">=", "G": "<=", "E": "=", "N": "Obj:"}
+SYMBOL_MAPPING = {"L": "<=", "G": ">=", "E": "=", "N": "Obj:"}
 
 
 class LPModel:
@@ -10,9 +9,12 @@ class LPModel:
 
     def __init__(self):
         self._obj_name: Optional[str] = None  # Reference to the objective function
-        self.constraints_and_obj: Dict[str, Row] = {}  # Will include the objective function
-        self.variables: Dict[str, Bound] = {}
+        self.constraints_and_obj: Dict[str, Row] = (
+            {}
+        )  # Will include the objective function
+        self.var_bounds: Dict[str, Bound] = {}
         self.minimization_problem: Optional[bool] = None
+        self.var_results: Dict[str, float] = {}
 
     def add_row(self, row_name: str, row_type: str):
         assert (
@@ -29,16 +31,11 @@ class LPModel:
     def objective(self):
         return self.constraints_and_obj.get(self._obj_name, None)
 
-    def print_model(self):
-        print("OBJECTIVE")
-        self.objective.print()
-        print("\nCONSTRAINTS")
-        for row in self.constraints_and_obj.values():
-            if row.row_type != "N":
-                row.print()
-        print("\nBOUNDS")
-        for bound in self.variables.values():
-            bound.print()
+    @property
+    def constraints(self) -> Generator:
+        for name, row in self.constraints_and_obj.items():
+            if not row.is_objective:
+                yield name, row
 
 
 class Row:
@@ -54,24 +51,17 @@ class Row:
         if coefficients is None:
             coefficients = {}
         self.coefficients: Dict[str, float] = coefficients
-        self.rhs_value: Optional[
-            float
-        ] = rhs_value  # Need float since that's what's expected in analysis
+        self.rhs_value: Optional[float] = (
+            rhs_value  # Need float since that's what's expected in analysis
+        )
         self.is_objective: bool = False  # Can be overidden after creation
 
-    def print(self):
-        print(self.name, end=":\t")
-        if self.rhs_value is not None:
-            print(self.rhs_value, end="\t")
-        print(f"{SYMBOL_MAPPING[self.row_type]} ", end="")
+    def __str__(self) -> str:
+        s = f"{self.name}: "
         for var_name, coefficient in self.coefficients.items():
-            if coefficient > 0:
-                print("+", end="")
-            if coefficient == 1:
-                print(f"{var_name}", end="\t")
-            else:
-                print(f"{coefficient}*{var_name}", end="\t")
-        print()
+            s += f"{coefficient:+.12g} {var_name} "
+        s += f"{SYMBOL_MAPPING[self.row_type]} {self.rhs_value}"
+        return s
 
     def coefficient_range(
         self,
@@ -93,12 +83,24 @@ class Row:
 
 
 class Bound:
-    """A bound on a variable"""
+    """A variable bound"""
 
-    def __init__(self, name: str, lhs_bound=None, rhs_bound=None):
-        self.name: str = name
+    def __init__(self, var_name: str, lhs_bound=None, rhs_bound=None):
+        self.name: str = var_name
         self.lhs_bound: Optional[float] = lhs_bound
         self.rhs_bound: Optional[float] = rhs_bound
+
+    def tighten(self, lower_bound=None, upper_bound=None):
+        if lower_bound is not None:
+            if self.lhs_bound is None:
+                self.lhs_bound = lower_bound
+            else:
+                self.lhs_bound = max(self.lhs_bound, lower_bound)
+        if upper_bound is not None:
+            if self.rhs_bound is None:
+                self.rhs_bound = upper_bound
+            else:
+                self.rhs_bound = min(self.rhs_bound, upper_bound)
 
     def print(self):
         if self.lhs_bound is not None and self.rhs_bound is not None:

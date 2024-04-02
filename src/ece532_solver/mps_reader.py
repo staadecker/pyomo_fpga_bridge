@@ -123,12 +123,12 @@ class MPSReader:
         name = line[2]
 
         # If the bound doesn't already exist, create it and add it to the dictionary of bounds
-        if name not in self.model.variables:
+        if name not in self.model.var_bounds:
             bound = Bound(name)
-            self.model.variables[name] = bound
+            self.model.var_bounds[name] = bound
         # If it does exist, retrieve it
         else:
-            bound = self.model.variables[name]
+            bound = self.model.var_bounds[name]
 
         # Set either the upper or the lower bound depending on the bound type
         if bound_type == "MI":

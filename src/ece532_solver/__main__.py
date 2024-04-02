@@ -1,5 +1,4 @@
 import argparse
-import numpy as np
 from pathlib import Path
 
 from ece532_solver.ethernet_interface import (

@@ -6,7 +6,7 @@ https://lpsolve.sourceforge.net/5.5/mps-format.htm
 
 from typing import List
 
-from .lp_model import Bound, LPModel
+from .lp_model import Variable, LPModel
 from .util import print_progress
 
 
@@ -64,6 +64,7 @@ class MPSReader:
         # The _do_nothing function returns, true
         # This ensures we really reached the end of parsing
         assert self.function_to_run(None)
+        assert self.model.is_valid()
         return self.model
 
     def _do_nothing(self, _):
@@ -110,28 +111,25 @@ class MPSReader:
 
     def _read_bound(self, line: List):
         """Read a line from the BOUNDS section"""
-
         # The first element in the bounds section is the bound type
         bound_type = line[0]
-
-        # FR indicates a free variable so no bounds
-        if bound_type == "FR":
-            return
 
         # The second element is not important
         # The third is the variable on which the bound applies
         name = line[2]
 
         # If the bound doesn't already exist, create it and add it to the dictionary of bounds
-        if name not in self.model.var_bounds:
-            bound = Bound(name)
-            self.model.var_bounds[name] = bound
+        if name not in self.model.variables:
+            bound = Variable(name)
+            self.model.variables[name] = bound
         # If it does exist, retrieve it
         else:
-            bound = self.model.var_bounds[name]
+            bound = self.model.variables[name]
 
         # Set either the upper or the lower bound depending on the bound type
-        if bound_type == "MI":
+        if bound_type == "FR":
+            pass
+        elif bound_type == "MI":
             bound.rhs_bound = 0
         elif bound_type == "PL":
             bound.lhs_bound = 0

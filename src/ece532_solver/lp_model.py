@@ -12,9 +12,26 @@ class LPModel:
         self.constraints_and_obj: Dict[str, Row] = (
             {}
         )  # Will include the objective function
-        self.var_bounds: Dict[str, Bound] = {}
+        self.variables: Dict[str, Variable] = {}
         self.minimization_problem: Optional[bool] = None
         self.var_results: Dict[str, float] = {}
+
+    def is_valid(self):
+        """Checks that the variables in the model are the same as the variables in the constraints and objective."""
+        variables_in_model = {
+            var for row in self.constraints_and_obj.values() for var in row.coefficients
+        }
+        return set(self.variables.keys()) == variables_in_model
+
+    def assert_is_in_standard_form(self):
+        for _, row in self.constraints:
+            assert row.rhs_value >= 0, f"RHS value must be non-negative, {row}"
+            assert row.row_type == "E", "All constraints must be equalities"
+
+        assert self.is_valid(), "All variables must be in the constraints and objective"
+        for var_name, var in self.variables.items():
+            assert var.lhs_bound == 0, f"All variables must have zero lower bounds, {var_name, var.lhs_bound, var.rhs_bound}"
+            assert var.rhs_bound is None, f"All variables must have no upper bounds, {var_name, var.lhs_bound, var.rhs_bound}"
 
     def add_row(self, row_name: str, row_type: str):
         assert (
@@ -32,7 +49,7 @@ class LPModel:
         return self.constraints_and_obj.get(self._obj_name, None)
 
     @property
-    def constraints(self) -> Generator:
+    def constraints(self) -> Generator[Tuple[str, "Row"], None, None]:
         for name, row in self.constraints_and_obj.items():
             if not row.is_objective:
                 yield name, row
@@ -82,8 +99,8 @@ class Row:
         return (None, float("inf")), (None, 0)
 
 
-class Bound:
-    """A variable bound"""
+class Variable:
+    """A variable with its bound"""
 
     def __init__(self, var_name: str, lhs_bound=None, rhs_bound=None):
         self.name: str = var_name

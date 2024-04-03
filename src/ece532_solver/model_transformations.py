@@ -2,6 +2,7 @@ from collections import defaultdict
 from typing import List, Type, Optional
 from scipy.sparse import coo_array
 import numpy as np
+import gurobipy as gp
 import abc
 
 from tqdm import tqdm
@@ -51,7 +52,7 @@ class MultiTryTransform(MultiTransform):
         self.applied_transforms = []
 
     def apply(self):
-        for i in range(10):
+        for i in range(100):
             results = []
             for transform in tqdm(
                 self.transforms, desc=f"Presolve round {i+1}", ascii=True
@@ -144,9 +145,7 @@ class RemoveVarsFixedByBound(Transform):
         for name in bounds_to_delete:
             del self.model.variables[name]
         if bounds_to_delete:
-            return (
-                f"Removed {len(bounds_to_delete)} variables (squeezed by bounds)"
-            )
+            return f"Removed {len(bounds_to_delete)} variables (squeezed by bounds)"
 
 
 class ConstraintToBound(Transform):
@@ -155,10 +154,17 @@ class ConstraintToBound(Transform):
     def apply(self):
         rows_to_delete = []
         for name, row in self.model.constraints:
-            if len(row.coefficients) != 1 or row.row_type not in ("L", "G"):
+            if not (len(row.coefficients) == 1 and row.row_type in ("L", "G")):
                 continue
 
-            var_name, coef = list(row.coefficients.items())[0]
+            var_name, coef = row.coefficients.popitem()
+            if coef < 0:
+                coef *= -1
+                row.rhs_value *= -1
+                if row.row_type == "L":
+                    row.row_type = "G"
+                elif row.row_type == "G":
+                    row.row_type = "L"
             bound_val = row.rhs_value / coef
             if var_name not in self.model.variables:
                 self.model.variables[var_name] = Variable(var_name)
@@ -196,9 +202,7 @@ class RemoveUnusedVariables(Transform):
         for bound in to_delete:
             self.removed_bounds.append(self.model.variables.pop(bound))
         if to_delete:
-            return (
-                f"Removed {len(to_delete)} variables (unused)"
-            )
+            return f"Removed {len(to_delete)} variables (unused)"
 
     def undo(self):
         for bound in self.removed_bounds:
@@ -262,10 +266,7 @@ class SnapConstraintsToEquality(Transform):
 
     Since 3.33 is less than 4, the bound is redundant and y will always be maximized such that the constraint is an equality.
     """
-    applied=False
     def apply(self):
-        if SnapConstraintsToEquality.applied:
-            return
         constraints_snapped = 0
         for var_name, var in self.model.variables.items():
             obj_coef = self.model.objective.coefficients.get(var_name, None)
@@ -322,66 +323,175 @@ class SnapConstraintsToEquality(Transform):
 
             row.row_type = "E"
             constraints_snapped += 1
-            # SnapConstraintsToEquality.applied = True
-            # print(row)
-            # break
         if constraints_snapped:
-            return f"Modified {constraints_snapped} constraints (snapped to equality)"
+            return f"Tightened {constraints_snapped} constraints (snapped to equality)"
 
     def undo(self): ...
 
+class SnapConstraintToEqualityDueToBounds(Transform):
+    def apply(self):
+        snap_count = 0
+        for _, row in self.model.constraints:
+            if not (row.row_type in ("L", "G")):
+                continue
 
-class RemoveTwoTermEqualities(Transform):
+            should_maximize = (row.row_type == "L")
+
+            computed = 0
+            for var, coef in row.coefficients.items():
+                bound = self.model.variables[var].lhs_bound if (should_maximize ^ (coef < 0)) else self.model.variables[var].rhs_bound
+                if bound is None:
+                    computed = None
+                    break
+                computed += coef * bound
+            if computed is None:
+                continue
+            if computed == row.rhs_value:
+                row.row_type = "E"
+                snap_count += 1
+        if snap_count:
+            return f"Tightened {snap_count} constraints (snapped to equality due to bounds)"
+            
+
+class RemoveEquality(Transform):
     """Converts ax + by = c to y = c/b - a/b * x and replaces all instances of y with this expression.
     For example if another expression has 5y + 2x < 3, it will be replaced with (2 - 5*a/b)x < 3 - 5*c/b
     """
 
+    TERM_CUTOFF = 10
+
     def __init__(self, model: LPModel) -> None:
         super().__init__(model)
-        self.substitutions = {}
+        self.transforms = {}
 
     def apply(self):
-        rows_to_delete = []
-        for name, row in self.model.constraints:
-            # TODO remove rhs_value condition since it's unecessary
-            if not (row.row_type == "E" and len(row.coefficients) == 2 and row.rhs_value == 0):
-                continue
+        rows_deleted = 0
+        while True:
+            row_to_delete = None
+            for name, row in self.model.constraints:
+                if (
+                    row.row_type == "E"
+                    and len(row.coefficients) <= RemoveEquality.TERM_CUTOFF
+                    and len(row.coefficients) > 1
+                    and row.rhs_value == 0
+                ):
+                    row_to_delete = name
+                    break
+            if row_to_delete is None:
+                break
 
-            (var_x, coef_a), (var_y, coef_b) = row.coefficients.items()
+            row = self.model.constraints_and_obj.pop(row_to_delete)
+            last_var, last_coef = row.coefficients.popitem()
+            assert last_coef != 0, f"Coefficient should not be zero for {last_var} in {row}"
+            last_coef *= -1  # Flip to the other side
+            rhs_const = -row.rhs_value / last_coef  # Flip to the other side
+            coefs = {v: c / last_coef for v, c in row.coefficients.items()}
 
-            assert coef_a != 0 and coef_b != 0
-
-            for sub_row_name, sub_row in self.model.constraints_and_obj.items():
-                if sub_row_name == name or var_y not in sub_row.coefficients:
+            for sub_row in self.model.constraints_and_obj.values():
+                if last_var not in sub_row.coefficients:
                     continue
+                scaling_coef = sub_row.coefficients.pop(last_var)
+                scaled_coefs = {v: c * scaling_coef for v, c in coefs.items()}
+                sub_row.rhs_value -= rhs_const * scaling_coef
+                for v, c in scaled_coefs.items():
+                    if v in sub_row.coefficients:
+                        sub_row.coefficients[v] += c
+                    else:
+                        sub_row.coefficients[v] = c
+                sub_row.coefficients = {v: c for v, c in sub_row.coefficients.items() if c != 0}
+            self.model.constraints_and_obj = {n: r for n, r in self.model.constraints_and_obj.items() if len(r.coefficients) > 0}
 
-                # Update coef for x
-                sub_row_coef = sub_row.coefficients.get(var_x, 0) - sub_row.coefficients[var_y] * coef_a / coef_b
-                if sub_row_coef == 0:
-                    del sub_row.coefficients[var_x]
-                else:
-                    sub_row.coefficients[var_x] = sub_row_coef
-
-                # Update rhs value
-                sub_row.rhs_value -= (
-                    sub_row.coefficients[var_y] * row.rhs_value / coef_b
+            bounds = self.model.variables.pop(last_var)
+            if bounds.lhs_bound is not None:
+                self.model.constraints_and_obj[last_var + "__lower"] = Row(
+                    last_var + "__lower",
+                    "G",
+                    dict(coefs),
+                    rhs_value=bounds.lhs_bound - rhs_const,
                 )
-
-                del sub_row.coefficients[var_y]
-
-            assert var_y not in self.substitutions
-            self.substitutions[var_y] = (var_y, coef_a, coef_b, row.rhs_value, var_x)
-            rows_to_delete.append(name)
-        for name in rows_to_delete:
-            del self.model.constraints_and_obj[name]
-        if rows_to_delete:
-            return f"Removed {len(rows_to_delete)} constraints (two-term equality)"
+            if bounds.rhs_bound is not None:
+                self.model.constraints_and_obj[last_var + "__upper"] = Row(
+                    last_var + "__upper",
+                    "L",
+                    dict(coefs),
+                    rhs_value=bounds.rhs_bound - rhs_const,
+                )
+            self.transforms[last_var] = (rhs_const, coefs, bounds)
+            rows_deleted += 1
+        if rows_deleted:
+            return f"Removed {rows_deleted} constraints (equality w/ <{RemoveEquality.TERM_CUTOFF} terms)"
 
     def undo(self):
-        for var_y, coef_a, coef_b, rhs_value, var_x in self.substitutions.values():
-            self.model.var_results[var_y] = (
-                rhs_value / coef_b - coef_a / coef_b * self.model.var_results[var_x]
+        for var, (rhs_const, coefs, bounds) in self.transforms.values():
+            self.model.var_results[var] = rhs_const + sum(
+                c * self.model.var_results[v] for v, c in coefs.items()
             )
+            assert (
+                bounds.lhs_bound is None
+                or bounds.lhs_bound <= self.model.var_results[var]
+            )
+            assert (
+                bounds.rhs_bound is None
+                or bounds.rhs_bound >= self.model.var_results[var]
+            )
+
+class RemoveWeakerConstraints(Transform):
+    def apply(self):
+        rows_deleted = 0
+        for var in self.model.variables:
+            tightest_row = None
+            loose_rows = []
+            for row_name, row in self.model.constraints:
+                if not (var in row.coefficients and row.row_type in ("L", "G")):
+                    continue
+                var_coef = row.coefficients[var]
+                coefs = {v: -c / var_coef for v, c in row.coefficients.items() if v != var}
+                # TODO it can also be pos if the variable is negative and the coef is positive
+                all_pos = all(self.model.variables[v].lhs_bound == 0 and c > 0 for v, c in coefs.items())
+                if not all_pos:
+                    tightest_row = None
+                    break
+                rhs = row.rhs_value / var_coef
+                # We can generalize this to allow upper bounds
+                is_upper_bound = (row.row_type == "L") ^ (var_coef < 0)
+                if not is_upper_bound:
+                    tightest_row = None
+                    break
+                if tightest_row is not None:
+                    tightest_rhs, tightest_coefs, _ = tightest_row
+                    if not set(tightest_coefs) == set(coefs):
+                        tightest_row = None
+                        break
+                    if rhs < tightest_rhs and all(c < tightest_coefs[v] for v, c in coefs.items()):
+                        loose_rows.append(tightest_row)
+                        tightest_row = (rhs, coefs, row_name)
+                    else:
+                        loose_rows.append((rhs, coefs, row_name))
+                else:
+                    tightest_row = (rhs, coefs, row_name)
+            
+            if tightest_row is None:
+                continue
+
+            for _, _, row_name in loose_rows:
+                del self.model.constraints_and_obj[row_name]
+                rows_deleted += 1
+        if rows_deleted:
+            return f"Removed {rows_deleted} constraints (weaker constraints)"
+    
+    def undo(self): ...
+
+class MakeIntoMaximization(Transform):
+    def apply(self):
+        if self.model.minimization_problem:
+            self.model.minimization_problem = False
+            obj_row = self.model.objective
+            obj_row.coefficients = {
+                var: -coef for var, coef in obj_row.coefficients.items()
+            }
+            obj_row.rhs_value = -obj_row.rhs_value
+
+    def undo(self): ...
 
 
 class ReplaceUnboundedVariables(Transform):
@@ -452,7 +562,7 @@ class MoveUpperBoundToConstraint(Transform):
     def apply(self):
         """Converts a<=x<=b to x>=a with constraint x<=b."""
         for var, bound in self.model.variables.items():
-            if bound.rhs_bound is None or bound.lhs_bound is None:
+            if not (bound.rhs_bound is not None and bound.lhs_bound is not None):
                 continue
 
             const_name = f"{var}__upper_bound"
@@ -504,15 +614,10 @@ class AddArtificialVariables(Transform):
         self.artificial_vars = []
 
     def apply(self):
-        for row in self.model.constraints_and_obj.values():
-            if row.is_objective:
-                continue
+        for row_name, row in self.model.constraints:
             # Ensure a positive RHS by multiplying by -1
             if row.rhs_value < 0:
-                row.coefficients = {
-                    var_name: -coefficient
-                    for var_name, coefficient in row.coefficients.items()
-                }
+                row.coefficients = {v: -c for v, c in row.coefficients.items()}
                 row.rhs_value = -row.rhs_value
                 if row.row_type == "L":
                     row.row_type = "G"
@@ -520,8 +625,8 @@ class AddArtificialVariables(Transform):
                     row.row_type = "L"
 
             # If we have a = or >= we need to add an artificial variable
-            if row.row_type in ("E", "G"):
-                artificial_name = f"art_{row.name}"
+            if row.row_type in ("G"):
+                artificial_name = f"art__{row_name}"
                 self.artificial_vars.append(artificial_name)
                 row.coefficients[artificial_name] = 1
                 self.model.objective.coefficients[artificial_name] = BIG_M
@@ -531,7 +636,7 @@ class AddArtificialVariables(Transform):
 
             # If we have <= or >= we need to add a slack variable
             if row.row_type in ("L", "G"):
-                slack_name = f"slack_{row.name}"
+                slack_name = f"slack__{row_name}"
                 self.artificial_vars.append(slack_name)
                 row.coefficients[slack_name] = 1 if row.row_type == "L" else -1
                 self.model.variables[slack_name] = Variable(slack_name, lhs_bound=0)
@@ -542,22 +647,39 @@ class AddArtificialVariables(Transform):
             # TODO use these values to find the constraints' duals?
             del self.model.var_results[var]
 
+def checkpoint(model, name: str):
+    print("\n" + name.upper())
+    export_to_lp_file(model, f"{name}.lp")
+    print(f"Model size: ({len(model.constraints_and_obj)}, {len(model.variables)})")
+    gp.setParam("LogToConsole", 0)
+    m = gp.read(f"{name}.lp")
+    m.Params.Method = 0
+    m.Params.InfUnbdInfo = 1
+    p = m.presolve()
+    p.write(f"{name}_gp_presolve.lp")
+    
+    m.optimize()
+    print(f"Objective value: {m.objVal}")
+    # print(*((v.VarName, v.X) for v in m.getVars()), sep="\n")
+    
 
 def transform_into_standard_form(model):
-    export_to_lp_file(model, "before_presolve.lp")
+    checkpoint(model, "before_presolve")
     presolve_transforms = MultiTryTransform(
         model,
         ConstraintToBound,
         RemoveVarsFixedByConstraint,
         RemoveVarsFixedByBound,
+        SnapConstraintToEqualityDueToBounds,
         SnapConstraintsToEquality,
-        # RemoveTwoTermEqualities,
+        RemoveEquality,
         RemoveUnusedVariables,
         RemoveEmptyConstraints,
         PushVarsToBounds,
+        RemoveWeakerConstraints
     )
     presolve_transforms.apply()
-    export_to_lp_file(model, "after_presolve.lp")
+    checkpoint(model, "after_presolve")
     transforms = MultiTransform(
         model,
         MoveUpperBoundToConstraint,
@@ -565,25 +687,26 @@ def transform_into_standard_form(model):
         ReplaceUnboundedVariables,
         ShiftBoundsToZero,
         AddArtificialVariables,
+        MakeIntoMaximization,
     )
     transforms.apply()
-    export_to_lp_file(model, "after_standard_form.lp")
+    checkpoint(model, "after_standard_form")
     model.assert_is_in_standard_form()
 
-
 def export_to_lp_file(model: LPModel, filename: str):
-    assert model.is_valid()
+    model.assert_is_valid()
     with open(filename, "w") as f:
-        f.write("Minimize\n")
+        f.write("Minimize\n") if model.minimization_problem else f.write("Maximize\n")
         f.write("obj: ")
         for var, coef in model.objective.coefficients.items():
             f.write(f"{coef:+.12g} {var} ")
-        f.write(f"{(-model.objective.rhs_value + 0.):+.12g}\n")
+        f.write(f"{(-model.objective.rhs_value + 0.):+.12g} Constant\n")
 
         f.write("\nSubject To\n")
         for _, row in model.constraints:
             f.write(f"{row}\n")
         f.write("\nBounds\n")
+        f.write("Constant = 1\n")
         for var, bound in model.variables.items():
             # Doing + 0. to avoid -0.0, in Python 3.11 and up the format specifier z can be used (see PEP682)
             if bound.lhs_bound is None:

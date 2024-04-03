@@ -41,6 +41,7 @@ def open_new_client(tableau, connection, BUFFER_SIZE=1446, RECV_BUFFER_SIZE=64):
 
         len_tableau = len(tableau)
 
+
         for i in tqdm(range(0, len_tableau, FP_per_packet), desc="Sending tableau", ascii=True):
             # Slice the flattened matrix to get the current chunk
             chunk = tableau[i : min(i + FP_per_packet, len_tableau)]
@@ -72,7 +73,7 @@ def open_new_client(tableau, connection, BUFFER_SIZE=1446, RECV_BUFFER_SIZE=64):
         recvd_tableau = np.array([], dtype=np.float32)
 
         for i in tqdm(
-            range(0, num_cols * num_rows, RECV_BUFFER_SIZE), desc="Receiving results", ascii=True
+            range(0, num_cols -1, RECV_BUFFER_SIZE), desc="Receiving results", ascii=True
         ):
             while num_elements_recvd <= i:
                 byte_buffer += connection.recv(RECV_BUFFER_SIZE)
@@ -89,17 +90,9 @@ def open_new_client(tableau, connection, BUFFER_SIZE=1446, RECV_BUFFER_SIZE=64):
                     byte_buffer = byte_buffer[largest_multiple * 4 :]
 
                     num_elements_recvd += largest_multiple
-                    print(f"RECEIVED {num_elements_recvd} ELEMENTS...", end="\r")
 
-        recvd_tableau = recvd_tableau.reshape((num_rows, num_cols))
 
-        print("DONE")
-
-        # VERIFICATION: check that both tableaus are equal
-        if np.all(tableau == recvd_tableau):
-            print("TABLEAUS ARE EQUAL!!!")
-        else:
-            print("TABLEAUS NOT EQUAL :((((((")
+        print(recvd_tableau)
 
     # Close the connection if break from loop
     connection.close()

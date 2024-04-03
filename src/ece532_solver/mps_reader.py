@@ -24,7 +24,7 @@ class MPSReader:
         # Start by doing nothing as we'll wait for a Keyword.
         self.function_to_run = self._do_nothing
         # The model that will be created
-        self.model: LPModel = LPModel()
+        self.model: LPModel = LPModel(minimization_problem=True) # This is the default and Gurobi specifies otherwise when it isn't the case
 
         # Mapping of keywords to the function that will then need to be run following the keyword.
         self.KEY_MAPPING = {
@@ -64,7 +64,8 @@ class MPSReader:
         # The _do_nothing function returns, true
         # This ensures we really reached the end of parsing
         assert self.function_to_run(None)
-        assert self.model.is_valid()
+
+        self.model.assert_is_valid()
         return self.model
 
     def _do_nothing(self, _):
@@ -72,7 +73,6 @@ class MPSReader:
         return True
 
     def _read_sense(self, sense: List):
-        assert self.model.minimization_problem is None
         sense = sense[0]
         if sense == "MAX":
             self.model.minimization_problem = False
@@ -111,20 +111,19 @@ class MPSReader:
 
     def _read_bound(self, line: List):
         """Read a line from the BOUNDS section"""
+        if len(self.model.variables) == 0:
+            for row in self.model.constraints_and_obj.values():
+                for var in row.coefficients:
+                    if var not in self.model.variables:
+                        self.model.variables[var] = Variable(var, lhs_bound=0)
+
         # The first element in the bounds section is the bound type
         bound_type = line[0]
 
         # The second element is not important
         # The third is the variable on which the bound applies
         name = line[2]
-
-        # If the bound doesn't already exist, create it and add it to the dictionary of bounds
-        if name not in self.model.variables:
-            bound = Variable(name)
-            self.model.variables[name] = bound
-        # If it does exist, retrieve it
-        else:
-            bound = self.model.variables[name]
+        bound = self.model.variables[name]
 
         # Set either the upper or the lower bound depending on the bound type
         if bound_type == "FR":

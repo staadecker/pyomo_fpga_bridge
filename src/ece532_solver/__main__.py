@@ -29,6 +29,7 @@ def main():
 
 
 def main_without_argument_parser(input_file, output_file=None, use_fpga=False):
+    # input_file = "gurobi.mps"
     print("Solving model:", input_file)
     if output_file is None:
         output_file = input_file[:-4] + "_results.txt"
@@ -37,16 +38,17 @@ def main_without_argument_parser(input_file, output_file=None, use_fpga=False):
 
     # Read input file and load into Model object
     model = MPSReader(input_file).read()
+
     transform_into_standard_form(model)
     export_to_lp_file(model, working_dir / "standard_form.lp")
     tableau = build_tableau(model)
     print("Generated tableau with shape:", tableau.shape)
 
-    tableau_file = working_dir / "tableau.bin"
-
+    
     if use_fpga:
         transfer_to_fpga(tableau)
     else:
+        tableau_file = working_dir / "tableau.bin"
         transfer_to_simulated_solver(tableau, tableau_file)
 
 

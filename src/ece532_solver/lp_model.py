@@ -7,28 +7,31 @@ SYMBOL_MAPPING = {"L": "<=", "G": ">=", "E": "=", "N": "Obj:"}
 class LPModel:
     """Represents a linear model. Contains all the rows, variable bounds and objective function."""
 
-    def __init__(self):
+    def __init__(self, minimization_problem):
         self._obj_name: Optional[str] = None  # Reference to the objective function
         self.constraints_and_obj: Dict[str, Row] = (
             {}
         )  # Will include the objective function
         self.variables: Dict[str, Variable] = {}
-        self.minimization_problem: Optional[bool] = None
+        self.minimization_problem: bool = minimization_problem
         self.var_results: Dict[str, float] = {}
 
-    def is_valid(self):
+    def assert_is_valid(self):
         """Checks that the variables in the model are the same as the variables in the constraints and objective."""
-        variables_in_model = {
+        assert self.minimization_problem is not None, "No sense set"
+        variables_in_constr = {
             var for row in self.constraints_and_obj.values() for var in row.coefficients
         }
-        return set(self.variables.keys()) == variables_in_model
+        variables_in_model = set(self.variables.keys())
+        assert variables_in_model == variables_in_constr, f"{len(variables_in_model)} variables in model but {len(variables_in_constr)} in constraints and objective ({variables_in_constr ^ variables_in_model})"
 
     def assert_is_in_standard_form(self):
+        assert not self.minimization_problem
         for _, row in self.constraints:
             assert row.rhs_value >= 0, f"RHS value must be non-negative, {row}"
             assert row.row_type == "E", "All constraints must be equalities"
 
-        assert self.is_valid(), "All variables must be in the constraints and objective"
+        self.assert_is_valid()
         for var_name, var in self.variables.items():
             assert var.lhs_bound == 0, f"All variables must have zero lower bounds, {var_name, var.lhs_bound, var.rhs_bound}"
             assert var.rhs_bound is None, f"All variables must have no upper bounds, {var_name, var.lhs_bound, var.rhs_bound}"
@@ -45,7 +48,7 @@ class LPModel:
             self.constraints_and_obj[row_name].is_objective = True
 
     @property
-    def objective(self):
+    def objective(self) -> Optional["Row"]:
         return self.constraints_and_obj.get(self._obj_name, None)
 
     @property

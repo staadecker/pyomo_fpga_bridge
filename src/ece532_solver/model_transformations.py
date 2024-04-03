@@ -655,6 +655,7 @@ def checkpoint(model, name: str):
     m = gp.read(f"{name}.lp")
     m.Params.Method = 0
     m.Params.InfUnbdInfo = 1
+    m.Params.Presolve = 0
     p = m.presolve()
     p.write(f"{name}_gp_presolve.lp")
     
@@ -722,23 +723,25 @@ def export_to_lp_file(model: LPModel, filename: str):
 
 
 def build_tableau(model: LPModel):
-    variable_order = defaultdict(lambda: len(variable_order))
-    column_order = defaultdict(lambda: len(column_order))
-
+    last_column_index = len(model.variables)
+    variable_index = {var: i for i, var in enumerate(model.variables)}
+    
     i = []
     j = []
     data = []
 
-    for row in model.constraints_and_obj.values():
-        row_index = column_order[row.name]
+    for row_index, row in enumerate(model.constraints_and_obj.values()):
         for var, coef in row.coefficients.items():
-            col_index = variable_order[var]
             i.append(row_index)
-            j.append(col_index)
+            j.append(variable_index[var])
             data.append(coef)
+        i.append(row_index)
+        j.append(last_column_index)
+        data.append(row.rhs_value)
+    
 
     return coo_array(
         (data, (i, j)),
-        shape=(len(model.constraints_and_obj), len(model.variables)),
+        shape=(len(model.constraints_and_obj), len(model.variables) + 1),
         dtype=np.float64,
     ).toarray()
